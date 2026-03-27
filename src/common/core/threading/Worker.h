@@ -49,6 +49,16 @@ public:
     Worker& operator=(const Worker&) = delete;
 
     /**
+     * @brief 获取/设置工作循环间隔（毫秒）
+     *
+     * workLoop 在每次 processTask() 调用后等待该时长。默认 1ms，
+     * 子类可在构造函数中通过 setLoopInterval() 按需调整。
+     * 该方法是线程安全的（底层为 std::atomic<int>）。
+     */
+    int loopInterval() const { return m_loopInterval.load(std::memory_order_relaxed); }
+    void setLoopInterval(int ms) { m_loopInterval.store(qMax(0, ms), std::memory_order_relaxed); }
+
+    /**
      * @brief 获取当前状态
      * @return 当前工作线程状态
      */
@@ -305,6 +315,7 @@ private:
     QElapsedTimer m_uptimeTimer;        ///< 运行时间计时器
     
     bool m_waitForFinish;               ///< 是否等待完成
+    std::atomic<int> m_loopInterval;    ///< workLoop 每次迭代后的休眠时长（毫秒，默认 1ms）
 };
 
 #endif // WORKER_H

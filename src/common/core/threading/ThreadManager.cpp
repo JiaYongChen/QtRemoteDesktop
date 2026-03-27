@@ -2,10 +2,8 @@
 #include "Worker.h"
 #include <QtCore/QMutexLocker>
 #include <QtCore/QPointer>
-#include <QtCore/QDebug>
 #include <QtCore/QCoreApplication>
-#include <QtCore/QLoggingCategory> // 引入QLoggingCategory以使用分类日志
-#include "../logging/LoggingCategories.h" // 引入日志分类声明，使用lcThreading进行分类日志输出
+#include "../logging/LoggingCategories.h"
 
 // 静态成员初始化
 ThreadManager* ThreadManager::s_instance = nullptr;
@@ -675,37 +673,17 @@ void ThreadManager::onWorkerStopped() {
 }
 
 void ThreadManager::onWorkerPaused() {
-    qCDebug(lcThreading) << "ThreadManager::onWorkerPaused() called";
     Worker* worker = qobject_cast<Worker*>(sender());
-    if ( !worker ) {
-        qCDebug(lcThreading) << "ThreadManager::onWorkerPaused() - No worker sender";
-        return;
-    }
-
+    if ( !worker ) return;
     QString name = getThreadNameByWorker(worker);
-    qCDebug(lcThreading) << "ThreadManager::onWorkerPaused() - Worker name:" << name;
-    if ( !name.isEmpty() ) {
-        qCDebug(lcThreading) << "ThreadManager::onWorkerPaused() - Emitting threadPaused signal for:" << name;
-        emit threadPaused(name);
-        qCDebug(lcThreading) << "ThreadManager::onWorkerPaused() - threadPaused signal emitted";
-    }
+    if ( !name.isEmpty() ) emit threadPaused(name);
 }
 
 void ThreadManager::onWorkerResumed() {
-    qCDebug(lcThreading) << "ThreadManager::onWorkerResumed() called";
     Worker* worker = qobject_cast<Worker*>(sender());
-    if ( !worker ) {
-        qCDebug(lcThreading) << "ThreadManager::onWorkerResumed() - No worker sender";
-        return;
-    }
-
+    if ( !worker ) return;
     QString name = getThreadNameByWorker(worker);
-    qCDebug(lcThreading) << "ThreadManager::onWorkerResumed() - Worker name:" << name;
-    if ( !name.isEmpty() ) {
-        qCDebug(lcThreading) << "ThreadManager::onWorkerResumed() - Emitting threadResumed signal for:" << name;
-        emit threadResumed(name);
-        qCDebug(lcThreading) << "ThreadManager::onWorkerResumed() - threadResumed signal emitted";
-    }
+    if ( !name.isEmpty() ) emit threadResumed(name);
 }
 
 void ThreadManager::onWorkerError(const QString& error) {
@@ -746,32 +724,13 @@ QString ThreadManager::getThreadNameByWorker(Worker* worker) const {
 }
 
 void ThreadManager::connectWorkerSignals(Worker* worker) {
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - Worker thread:" << worker->thread();
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - ThreadManager thread:" << this->thread();
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - Current thread:" << QThread::currentThread();
+    connect(worker, &Worker::started,       this, &ThreadManager::onWorkerStarted,  Qt::AutoConnection);
+    connect(worker, &Worker::stopped,       this, &ThreadManager::onWorkerStopped,  Qt::AutoConnection);
+    connect(worker, &Worker::paused,        this, &ThreadManager::onWorkerPaused,   Qt::AutoConnection);
+    connect(worker, &Worker::resumed,       this, &ThreadManager::onWorkerResumed,  Qt::AutoConnection);
+    connect(worker, &Worker::errorOccurred, this, &ThreadManager::onWorkerError,    Qt::AutoConnection);
 
-    // 尝试使用Qt::AutoConnection让Qt自动选择连接类型
-    bool result1 = connect(worker, &Worker::started, this, &ThreadManager::onWorkerStarted, Qt::AutoConnection);
-    bool result2 = connect(worker, &Worker::stopped, this, &ThreadManager::onWorkerStopped, Qt::AutoConnection);
-    bool result3 = connect(worker, &Worker::paused, this, &ThreadManager::onWorkerPaused, Qt::AutoConnection);
-    bool result4 = connect(worker, &Worker::resumed, this, &ThreadManager::onWorkerResumed, Qt::AutoConnection);
-    bool result5 = connect(worker, &Worker::errorOccurred, this, &ThreadManager::onWorkerError, Qt::AutoConnection);
-
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - Connected signals for worker:" << worker->name();
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - Connection results:" << result1 << result2 << result3 << result4 << result5;
-
-    if ( !result2 ) {
-        qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - FAILED to connect stopped signal for worker:" << worker->name();
-    }
-
-    // 验证连接是否真的建立
-    // 注意：避免捕获裸指针，防止对象已删除时的悬空访问。使用QPointer进行弱引用保护。
-    QPointer<Worker> workerGuard(worker);
-    QMetaObject::Connection conn = connect(worker, &Worker::stopped, this, [workerGuard]() {
-        const QString n = workerGuard ? workerGuard->name() : QStringLiteral("<deleted>");
-        qCDebug(lcThreading) << "Lambda slot received stopped signal from:" << n;
-    }, Qt::AutoConnection);
-    qCDebug(lcThreading) << "ThreadManager::connectWorkerSignals() - Lambda connection valid:" << (bool)conn;
+    qCDebug(lcThreading) << "Worker signals connected for:" << worker->name();
 }
 
 void ThreadManager::disconnectWorkerSignals(Worker* worker) {
@@ -794,27 +753,35 @@ void ThreadManager::tryAutoRestart(const QString& name) {
     }
 
     info->restartCount++;
+    int restartCount = info->restartCount;
 
-    qCDebug(lcThreading) << "Auto-restarting thread" << name << "(attempt" << info->restartCount << ")";
+    qCDebug(lcThreading) << "Auto-restarting thread" << name << "(attempt" << restartCount << ")";
 
-    // 延迟重启以避免快速循环
-    QTimer::singleShot(1000, [this, name]() {
-        // 注意：不要在lambda中持锁过长时间，先判断线程存在，再根据状态选择重启方式
-        if ( !hasThread(name) ) {
-            return;
+    // 延迟重启以避免快速循环。
+    // 使用 this 作为上下文对象：ThreadManager 销毁时定时器自动取消，防止悬挂回调。
+    QTimer::singleShot(1000, this, [this, name, restartCount]() {
+        QPointer<Worker> workerPtr;
+        bool threadRunning = false;
+
+        {
+            // 持锁读取 ThreadInfo 字段，防止同期调用 destroyThread 导致指针悬挂
+            QMutexLocker locker(&m_mutex);
+            ThreadInfo* info = findThreadInfo(name);
+            if ( !info ) return;
+
+            workerPtr    = info->worker;
+            threadRunning = info->thread && info->thread->isRunning();
         }
+        // 锁已释放，使用 QPointer 安全访问 Worker
 
-        // 如果底层QThread仍在运行，则直接在该线程中重新启动Worker
-        const ThreadInfo* cinfo = findThreadInfo(name);
-        if ( cinfo && cinfo->thread && cinfo->thread->isRunning() ) {
-            QMetaObject::invokeMethod(cinfo->worker, "start", Qt::QueuedConnection);
-        } else {
-            // 如果线程已停止，则按原有流程重新启动线程
+        if ( threadRunning && !workerPtr.isNull() ) {
+            // 底层线程仍在运行：通过 QueuedConnection 在工作线程中重新调度 Worker 启动
+            QMetaObject::invokeMethod(workerPtr.data(), "start", Qt::QueuedConnection);
+        } else if ( !threadRunning ) {
+            // 底层线程已停止：走正常启动流程（startThread 内部持锁，无需在此持锁）
             startThread(name);
         }
 
-        const ThreadInfo* finfo = findThreadInfo(name);
-        int count = finfo ? finfo->restartCount : 0;
-        emit threadRestarted(name, count);
+        emit threadRestarted(name, restartCount);
     });
 }

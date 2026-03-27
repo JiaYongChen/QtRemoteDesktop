@@ -2,7 +2,6 @@
 #include "../logging/LoggingCategories.h"
 #include <QtCore/QThread>
 #include <QtCore/QMutexLocker>
-#include <QtCore/QDebug>
 #include <QtCore/QTimer>
 #include <QtCore/QCoreApplication>
 
@@ -13,6 +12,7 @@ Worker::Worker(QObject *parent)
     , m_pauseRequested(false)
     , m_name("Worker")
     , m_waitForFinish(true)
+    , m_loopInterval(1)
 {
     // 初始化性能统计
     resetPerformanceStats();
@@ -86,33 +86,22 @@ void Worker::resetPerformanceStats()
 
 void Worker::start()
 {
-    qCDebug(lcApp) << "[DEBUG] Worker::start called for thread:" << QThread::currentThread()->objectName();
-    
     State currentState = m_state.load();
     if (currentState != State::Stopped) {
         return;
     }
-    
+
     setState(State::Starting);
     m_stopRequested.store(false);
     m_pauseRequested.store(false);
-    
+
     // 重置性能统计
     resetPerformanceStats();
-    
-    // 关键改动：改为通过单次定时器在事件循环启动后调度 doStart
-    // 原因：QThread::started 信号在事件循环启动之前发出，若在此直接调用 doStart/workLoop，
-    //       该线程将没有事件循环，BlockingQueuedConnection/QueuedConnection 将无法投递到该线程，
-    //       导致诸如 ThreadManager::stopThread(waitForFinish=true) 阻塞并引发测试超时。
-    // 方案：使用 QTimer::singleShot(0, this, ...) 将 doStart 投递到 worker 所属线程的事件队列，
-    //       等事件循环启动后再执行。workLoop 内部通过 QCoreApplication::processEvents() 主动处理事件，
-    //       确保 stop/pause/resume 等跨线程调用能够被及时响应。
-    qCDebug(lcApp) << "[DEBUG] Scheduling doStart after event loop starts for thread:" << QThread::currentThread()->objectName();
-    QTimer::singleShot(0, this, [this]() {
-        qCDebug(lcApp) << "[DEBUG] doStart executing in thread:" << QThread::currentThread()->objectName();
-        doStart();
-        qCDebug(lcApp) << "[DEBUG] doStart returned in thread:" << QThread::currentThread()->objectName();
-    });
+
+    // 通过单次定时器将 doStart 投递到 Worker 所属线程的事件队列。
+    // QThread::started 信号在事件循环启动之前发出，若在此直接调用 doStart/workLoop，
+    // 该线程将没有事件循环，QueuedConnection 无法投递，导致 stop/pause/resume 无响应。
+    QTimer::singleShot(0, this, &Worker::doStart);
 }
 
 void Worker::stop(bool waitForFinish)
@@ -275,56 +264,33 @@ void Worker::callCleanup()
 
 void Worker::workLoop() {
     qCDebug(lcThreading) << "Worker" << m_name << "开始工作循环";
-    
+
     try {
         while (!shouldStop()) {
-            // 关键改动：在循环顶部处理事件，确保QueuedConnection/计时器能够在工作线程被占用时仍然得到投递与执行
-            // 这样可以保证例如 ScreenCaptureWorker::startCapturing 通过 QMetaObject::invokeMethod(Qt::QueuedConnection)
-            // 能够被及时调度执行，避免因workLoop长时间占用而导致事件队列饿死，进而引发测试超时（如test_syncCapture）
+            // 每次迭代开头处理一次事件：驱动本线程的 QueuedConnection 及定时器回调，
+            // 保证 stop/pause/resume 等跨线程投递能够被及时执行。
+            // 只在循环顶部调用一次，避免多次调用带来的重入风险与 CPU 浪费。
             QCoreApplication::processEvents();
 
             waitIfPaused();
-            
-            if (shouldStop()) {
-                break;
-            }
-            
+            if (shouldStop()) break;
+
             startPerformanceTiming();
-            
-            // 在processTask前再次处理事件，尽量降低事件投递的延迟
-            QCoreApplication::processEvents();
-            
-            // 在processTask前检查停止状态
-            if (shouldStop()) {
-                break;
-            }
-            
             processTask();
-            
-            // 在processTask后立即检查停止状态
-            if (shouldStop()) {
-                break;
-            }
-            
             endPerformanceTiming();
-            
-            // 再次处理事件，确保刚刚在processTask过程中产生的Queued信号能够被及时投递
-            QCoreApplication::processEvents();
-            
-            // 最后检查停止状态
-            if (shouldStop()) {
-                break;
-            }
-            
-            // 短暂休眠以避免紧密循环，但保持对停止请求的响应性
-            QThread::msleep(1);
+
+            if (shouldStop()) break;
+
+            // 短暂休眠避免空任务时的紧密轮询；间隔通过 setLoopInterval() 按需调整。
+            // 子类若在 processTask() 内部已做阻塞或精确计时，可将间隔设为 0。
+            QThread::msleep(static_cast<unsigned long>(m_loopInterval.load(std::memory_order_relaxed)));
         }
     } catch (const std::exception& e) {
         emitError(QString("Exception in work loop: %1").arg(e.what()));
     } catch (...) {
         emitError("Unknown exception in work loop");
     }
-    
+
     qCDebug(lcThreading) << "Worker" << m_name << "工作循环结束";
 }
 
@@ -371,7 +337,6 @@ void Worker::doStop()
     // 避免线程保持运行导致 QThread 在销毁时仍在运行的错误。
     QThread* workerThread = this->thread();
     if (workerThread && workerThread->isRunning()) {
-        qCDebug(lcApp) << "[DEBUG] Worker::doStop() requesting thread quit for:" << m_name;
         workerThread->quit();
     }
 }

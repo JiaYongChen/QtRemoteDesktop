@@ -84,9 +84,8 @@ private slots:
 private:
     QClipboard* m_clipboard;           ///< 系统剪贴板
     bool m_enabled;                    ///< 是否启用监听
-    bool m_ignoreNextChange;           ///< 忽略下一次变化（自己触发的）
-    QString m_lastText;                ///< 上次的文本内容
-    QByteArray m_lastImageData;        ///< 上次的图片数据
+    QString m_lastText;                ///< 上次的文本内容（用于内容去重，避免自写回调）
+    QByteArray m_lastImageData;        ///< 上次的图片数据（同上）
 };
 
 #endif // CLIPBOARDMANAGER_H

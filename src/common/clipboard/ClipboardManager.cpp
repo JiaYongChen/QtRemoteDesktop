@@ -4,13 +4,12 @@
 #include <QtGui/QImage>
 #include <QtCore/QMimeData>
 #include <QtCore/QBuffer>
-#include <QtCore/QDebug>
+#include "../core/logging/LoggingCategories.h"
 
 ClipboardManager::ClipboardManager(QObject* parent)
     : QObject(parent)
     , m_clipboard(QGuiApplication::clipboard())
-    , m_enabled(false)
-    , m_ignoreNextChange(false) {
+    , m_enabled(false) {
     
     // 连接剪贴板变化信号
     connect(m_clipboard, &QClipboard::dataChanged,
@@ -44,12 +43,12 @@ void ClipboardManager::setEnabled(bool enabled) {
                 }
             }
         }
-        qDebug() << "ClipboardManager: Enabled";
+        qCDebug(lcClipboard) <<"ClipboardManager: Enabled";
     } else {
         // 禁用时清空状态
         m_lastText.clear();
         m_lastImageData.clear();
-        qDebug() << "ClipboardManager: Disabled";
+        qCDebug(lcClipboard) <<"ClipboardManager: Disabled";
     }
 }
 
@@ -57,14 +56,13 @@ void ClipboardManager::setText(const QString& text) {
     if (text == m_lastText) {
         return;
     }
-    
-    // 设置标志，避免触发自己的变化事件
-    m_ignoreNextChange = true;
+
+    // 先更新缓存再写入系统剪贴板：onClipboardChanged 的内容比较会发现值与 m_lastText
+    // 相同，从而自然跳过回调，无需额外的 ignoreNextChange 标志。
     m_lastText = text;
-    
     m_clipboard->setText(text);
     
-    qDebug() << "ClipboardManager: Set text to clipboard, length:" << text.length();
+    qCDebug(lcClipboard) <<"ClipboardManager: Set text to clipboard, length:" << text.length();
 }
 
 void ClipboardManager::setImage(const QImage& image) {
@@ -81,14 +79,12 @@ void ClipboardManager::setImage(const QImage& image) {
     if (imageData == m_lastImageData) {
         return;
     }
-    
-    // 设置标志，避免触发自己的变化事件
-    m_ignoreNextChange = true;
+
+    // 先更新缓存再写入系统剪贴板（同 setText 的自写回调抑制逻辑）
     m_lastImageData = imageData;
-    
     m_clipboard->setImage(image);
     
-    qDebug() << "ClipboardManager: Set image to clipboard, size:" << image.size();
+    qCDebug(lcClipboard) <<"ClipboardManager: Set image to clipboard, size:" << image.size();
 }
 
 void ClipboardManager::setImageFromPng(const QByteArray& pngData) {
@@ -98,7 +94,7 @@ void ClipboardManager::setImageFromPng(const QByteArray& pngData) {
     
     QImage image;
     if (!image.loadFromData(pngData, "PNG")) {
-        qWarning() << "ClipboardManager: Failed to load image from PNG data";
+        qCWarning(lcClipboard) <<"ClipboardManager: Failed to load image from PNG data";
         return;
     }
     
@@ -113,12 +109,6 @@ void ClipboardManager::onClipboardChanged(QClipboard::Mode mode) {
     
     // 如果被禁用，不处理
     if (!m_enabled) {
-        return;
-    }
-    
-    // 如果是自己触发的变化，忽略
-    if (m_ignoreNextChange) {
-        m_ignoreNextChange = false;
         return;
     }
     
@@ -142,7 +132,7 @@ void ClipboardManager::onClipboardChanged(QClipboard::Mode mode) {
                 m_lastImageData = imageData;
                 m_lastText.clear();  // 清空文本状态
                 
-                qDebug() << "ClipboardManager: Image changed, size:" << image.size();
+                qCDebug(lcClipboard) <<"ClipboardManager: Image changed, size:" << image.size();
                 emit clipboardImageChanged(imageData, image.width(), image.height());
             }
         }
@@ -156,7 +146,7 @@ void ClipboardManager::onClipboardChanged(QClipboard::Mode mode) {
             m_lastText = text;
             m_lastImageData.clear();  // 清空图片状态
             
-            qDebug() << "ClipboardManager: Text changed, length:" << text.length();
+            qCDebug(lcClipboard) <<"ClipboardManager: Text changed, length:" << text.length();
             emit clipboardTextChanged(text);
         }
     }

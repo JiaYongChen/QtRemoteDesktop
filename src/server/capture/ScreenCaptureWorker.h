@@ -155,17 +155,21 @@ private:
     QRect m_screenGeometry;                    ///< 屏幕几何信息
 
     // 错误处理
-    std::atomic<int> m_errorCount{ 0 };
+    std::atomic<int> m_errorCount{ 0 };        ///< 总错误计数（成功后清零）
+    std::atomic<int> m_consecutiveErrors{ 0 }; ///< 连续错误计数（用于退避计算）
+    std::atomic<int> m_recoveryAttempts{ 0 };  ///< 累计恢复尝试次数
     std::atomic<bool> m_recoveryMode{ false };
     QString m_lastError;
 
     // 常量定义
-    static constexpr int STATS_UPDATE_INTERVAL = 1000;     ///< 统计更新间隔(ms)
-    static constexpr int MAX_CAPTURE_TIME_HISTORY = 100;   ///< 最大捕获时间历史记录数
-    static constexpr int MAX_FRAME_TIMESTAMP_HISTORY = 60; ///< 最大帧时间戳历史记录数
-    static constexpr int MAX_ERROR_COUNT = 10;             ///< 最大错误计数
-    static constexpr int MIN_FRAME_RATE = 1;              ///< 最小帧率
-    static constexpr int MAX_FRAME_RATE = 120;            ///< 最大帧率
+    static constexpr int STATS_UPDATE_INTERVAL = 1000;      ///< 统计更新间隔(ms)
+    static constexpr int MAX_CAPTURE_TIME_HISTORY = 100;    ///< 最大捕获时间历史记录数
+    static constexpr int MAX_FRAME_TIMESTAMP_HISTORY = 60;  ///< 最大帧时间戳历史记录数
+    static constexpr int MAX_ERROR_COUNT = 10;              ///< 触发恢复流程的错误阈值
+    static constexpr int RECOVERY_BACKOFF_BASE_MS = 100;    ///< 退避基准时间(ms)
+    static constexpr int RECOVERY_BACKOFF_MAX_MS  = 5000;   ///< 退避上限(ms)
+    static constexpr int MIN_FRAME_RATE = 1;                ///< 最小帧率
+    static constexpr int MAX_FRAME_RATE = 120;              ///< 最大帧率
 };
 
 #endif // SCREENCAPTUREWORKER_H

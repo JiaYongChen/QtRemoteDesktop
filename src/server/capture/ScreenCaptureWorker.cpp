@@ -184,25 +184,26 @@ void ScreenCaptureWorker::stopCapturing() {
 
 void ScreenCaptureWorker::processTask() {
     try {
-        // 在任务开始处快速响应停止请求，避免进入不必要的捕获流程
         if ( shouldStop() ) {
             return;
         }
-        // 统一由performCapture执行一次捕获；测试环境下也需要生成模拟帧
+
+        // 恢复模式：屏幕仍不可用，降频等待，不尝试捕获
+        if ( m_recoveryMode.load() ) {
+            QThread::msleep(static_cast<unsigned long>(RECOVERY_BACKOFF_MAX_MS));
+            return;
+        }
+
         if ( m_isCapturing.load() ) {
-            // 按帧间隔节流，避免过于频繁
             if ( shouldCaptureFrame() ) {
-                // 在调用捕获前再次检查停止，尽可能减少进入重型操作的机会
                 if ( shouldStop() ) {
                     return;
                 }
                 performCapture();
             } else {
-                // 未到帧间隔，短暂休眠让出CPU
                 QThread::msleep(1);
             }
         } else {
-            // 未处于捕获状态时，轻量休眠避免空转
             QThread::msleep(2);
         }
 
@@ -247,6 +248,10 @@ void ScreenCaptureWorker::performCapture() {
             handleCaptureError("捕获的图像为空");
             return;
         }
+
+        // 捕获成功：重置连续错误计数，使退避时间归零
+        m_consecutiveErrors.store(0);
+        m_errorCount.store(0);
 
         // 记录捕获耗时
         auto captureEndTime = std::chrono::steady_clock::now();
@@ -438,20 +443,62 @@ void ScreenCaptureWorker::monitorResourceUsage() {
 }
 
 void ScreenCaptureWorker::handleCaptureError(const QString& error) {
-    qCWarning(screenCaptureWorker, "捕获错误: %s", qPrintable(error));
     m_lastError = error;
-    m_errorCount.fetch_add(1);
-    if ( m_errorCount.load() > MAX_ERROR_COUNT ) {
+    int total      = m_errorCount.fetch_add(1) + 1;
+    int consecutive = m_consecutiveErrors.fetch_add(1) + 1;
+
+    // 指数退避：100ms * 2^(consecutive-1)，上限 5000ms
+    int shift     = std::min(consecutive - 1, 5);   // 最多左移 5 位 = 32×
+    int backoffMs = std::min(RECOVERY_BACKOFF_BASE_MS * (1 << shift), RECOVERY_BACKOFF_MAX_MS);
+
+    if ( total > MAX_ERROR_COUNT ) {
+        // 进入恢复流程：重新初始化屏幕，并通知 ThreadManager
+        qCCritical(screenCaptureWorker,
+            "连续错误超限（总计 %d 次），进入恢复流程，退避 %d ms",
+            total, backoffMs);
         m_recoveryMode.store(true);
-        qCCritical(screenCaptureWorker, "错误次数过多，进入恢复模式");
+        QThread::msleep(static_cast<unsigned long>(backoffMs));
+        recoverFromError();
+        emitError(error);  // 通知 ThreadManager，触发可选的 Worker 重启
+    } else {
+        qCWarning(screenCaptureWorker,
+            "捕获错误 [%d/%d]（连续 %d 次）：%s，退避 %d ms",
+            total, MAX_ERROR_COUNT, consecutive, qPrintable(error), backoffMs);
+        if ( backoffMs > 0 ) {
+            QThread::msleep(static_cast<unsigned long>(backoffMs));
+        }
     }
 }
 
 bool ScreenCaptureWorker::recoverFromError() {
-    // 简化恢复策略：重置错误计数与恢复标志
+    int attempt = m_recoveryAttempts.fetch_add(1) + 1;
+
+    // 重新获取主屏幕指针（应对屏幕断开/重连场景）
+    QGuiApplication* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+    m_primaryScreen = app ? app->primaryScreen() : nullptr;
+    if ( m_primaryScreen ) {
+        m_screenGeometry = m_primaryScreen->geometry();
+        // 若捕获区域为空，用新屏幕几何更新
+        {
+            QMutexLocker locker(&m_configMutex);
+            if ( m_config.captureRect.isEmpty() ) {
+                m_config.captureRect = m_screenGeometry;
+            }
+        }
+        qCInfo(screenCaptureWorker,
+            "恢复成功（第 %d 次）：屏幕已重新初始化，尺寸 %dx%d",
+            attempt, m_screenGeometry.width(), m_screenGeometry.height());
+    } else {
+        qCWarning(screenCaptureWorker,
+            "恢复失败（第 %d 次）：仍无法获取主屏幕，保持恢复模式", attempt);
+    }
+
     m_errorCount.store(0);
-    m_recoveryMode.store(false);
-    return true;
+    m_consecutiveErrors.store(0);
+    // 若屏幕仍不可用，保持恢复模式，由 processTask 降频等待
+    m_recoveryMode.store(m_primaryScreen == nullptr);
+
+    return m_primaryScreen != nullptr;
 }
 
 void ScreenCaptureWorker::updateStats() {

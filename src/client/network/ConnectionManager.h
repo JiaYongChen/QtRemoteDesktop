@@ -6,8 +6,10 @@
 #include <QtCore/QMutex>
 #include <QtGui/QImage>
 #include <functional>
+#include <memory>
 #include "../../common/core/config/NetworkConstants.h"
 #include "../../common/core/network/Protocol.h"
+#include "../../common/core/crypto/SessionCrypto.h"
 
 class QTimer;
 class TcpClient;
@@ -128,6 +130,10 @@ private:
 
     // 连接超时
     int m_connectionTimeout;
+
+    // ECDH 会话加密（握手期间初始化，握手完成后传给 TcpClient）
+    std::unique_ptr<SessionCrypto> m_sessionCrypto;
+    QByteArray m_clientNonce;   // 本端握手 nonce（随公钥一起发送）
 
     static const int CONNECTION_TIMEOUT = NetworkConstants::DEFAULT_CONNECTION_TIMEOUT;
     static const int DEFAULT_RECONNECT_INTERVAL = NetworkConstants::DEFAULT_RECONNECT_INTERVAL;

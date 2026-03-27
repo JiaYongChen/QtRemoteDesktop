@@ -9,6 +9,7 @@
 
 class QTcpSocket;
 class QTimer;
+class SessionCrypto;
 
 /**
  * @brief TcpClient 只负责底层网络通信
@@ -42,6 +43,13 @@ public:
     // 消息发送 - 底层接口
     void sendMessage(MessageType type, const IMessageCodec& message);
 
+    /**
+     * @brief 设置会话加密上下文（握手完成后由 ConnectionManager 调用）
+     * @param crypto  非空时启用 AES-256-GCM 加密；nullptr 关闭加密
+     *                生命周期由调用方（ConnectionManager）管理
+     */
+    void setSessionCrypto(SessionCrypto* crypto);
+
 signals:
     void connected();
     void disconnected();
@@ -72,6 +80,9 @@ private:
     // 心跳相关 - 仅接收服务端心跳请求并响应
     QTimer* m_heartbeatCheckTimer;
     QDateTime m_lastHeartbeat;
+
+    // 会话加密（握手完成后由 ConnectionManager 设置）
+    SessionCrypto* m_sessionCrypto = nullptr;
 };
 
 #endif // TCPCLIENT_H

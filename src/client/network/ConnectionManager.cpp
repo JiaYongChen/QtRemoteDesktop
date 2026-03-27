@@ -1,7 +1,5 @@
 #include "ConnectionManager.h"
-#include <QtCore/QDebug>
 #include "../../common/core/logging/LoggingCategories.h"
-#include <QtCore/QMessageLogger>
 #include <QtCore/QTimer>
 #include "TcpClient.h"
 #include "../common/core/config/MessageConstants.h"
@@ -18,7 +16,14 @@ ConnectionManager::ConnectionManager(QObject* parent)
     , m_reconnectInterval(DEFAULT_RECONNECT_INTERVAL)
     , m_maxReconnectAttempts(DEFAULT_MAX_RECONNECT_ATTEMPTS)
     , m_currentReconnectAttempts(0)
-    , m_connectionTimeout(CONNECTION_TIMEOUT) {
+    , m_connectionTimeout(CONNECTION_TIMEOUT)
+    , m_sessionCrypto(std::make_unique<SessionCrypto>()) {
+    // 预先生成 ECDH 密钥对（P-256）和客户端 nonce
+    if (!m_sessionCrypto->generateKeyPair()) {
+        qCWarning(lcConnectionManager) <<"ConnectionManager: ECDH 密钥对生成失败";
+    }
+    m_clientNonce = SessionCrypto::generateNonce(16);
+
     setupTcpClient();
 
     // 设置连接超时定时器
@@ -37,9 +42,17 @@ ConnectionManager::~ConnectionManager() {
 
 void ConnectionManager::connectToHost(const QString& host, int port) {
     if ( m_connectionState != Disconnected ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient) << "ConnectionManager: Already connecting or connected, disconnecting first";
+        qCDebug(lcConnectionManager) <<"ConnectionManager: Already connecting or connected, disconnecting first";
         disconnectFromHost();
     }
+
+    // 每次新连接重新生成 ECDH 密钥对和 nonce（保证前向安全性）
+    m_sessionCrypto = std::make_unique<SessionCrypto>();
+    if (!m_sessionCrypto->generateKeyPair()) {
+        qCWarning(lcConnectionManager) <<"ConnectionManager: ECDH 密钥对重新生成失败";
+    }
+    m_clientNonce = SessionCrypto::generateNonce(16);
+    m_tcpClient->setSessionCrypto(nullptr);  // 清除旧的加密状态
 
     m_currentHost = host;
     m_currentPort = port;
@@ -103,7 +116,7 @@ int ConnectionManager::currentPort() const {
 // 业务逻辑接口实现
 void ConnectionManager::authenticate(const QString& username, const QString& password) {
     if ( !isConnected() ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient) << MessageConstants::Network::NOT_CONNECTED;
+        qCWarning(lcConnectionManager) <<MessageConstants::Network::NOT_CONNECTED;
         return;
     }
 
@@ -210,7 +223,7 @@ void ConnectionManager::onTcpError(const QString& error) {
 }
 
 void ConnectionManager::onConnectionTimeout() {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient) << "ConnectionManager: Connection timeout";
+    qCWarning(lcConnectionManager) <<"ConnectionManager: Connection timeout";
     setConnectionState(Error);
 
     if ( m_tcpClient ) {
@@ -228,7 +241,7 @@ void ConnectionManager::onConnectionTimeout() {
 
 void ConnectionManager::setConnectionState(ConnectionState state) {
     if ( m_connectionState != state ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient) << "ConnectionManager: State changed from" << m_connectionState << "to" << state;
+        qCInfo(lcConnectionManager) <<"ConnectionManager: State changed from" << m_connectionState << "to" << state;
         m_connectionState = state;
 
         // 发射状态变化信号，供 UI 层使用
@@ -289,34 +302,46 @@ void ConnectionManager::onTcpMessageReceived(MessageType type, const QByteArray&
 
 void ConnectionManager::handleHandshakeResponse(const QByteArray& data) {
     HandshakeResponse response;
-    if ( response.decode(data) ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient)
-            << MessageConstants::Network::HANDSHAKE_RESPONSE_RECEIVED;
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient)
-            << "Server version:" << response.serverVersion;
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient)
-            << "Screen resolution:" << response.screenWidth << "x" << response.screenHeight;
-
-        // 发送认证请求
-        sendAuthenticationRequest(m_username.isEmpty() ? "guest" : m_username,
-            m_password.isEmpty() ? "" : m_password);
-    } else {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient)
-            << "Failed to parse handshake response";
+    if (!response.decode(data)) {
+        qCWarning(lcConnectionManager) <<"Failed to parse handshake response";
+        return;
     }
+
+    qCInfo(lcConnectionManager) << MessageConstants::Network::HANDSHAKE_RESPONSE_RECEIVED;
+    qCDebug(lcConnectionManager) << "Server version:" << response.serverVersion
+        << "Screen:" << response.screenWidth << "x" << response.screenHeight;
+
+    // ── ECDH 会话密钥派生 ──────────────────────────────────────────────────
+    QByteArray serverPubKey(reinterpret_cast<const char*>(response.ecdhPublicKey), 65);
+    QByteArray serverNonce (reinterpret_cast<const char*>(response.serverNonce),   16);
+
+    if (serverPubKey.size() == 65 && !serverPubKey.startsWith('\0')) {
+        bool ok = m_sessionCrypto->deriveSessionKey(serverPubKey, m_clientNonce, serverNonce);
+        if (ok) {
+            // 激活 TcpClient 的加密层——此后所有消息均使用 AES-256-GCM
+            m_tcpClient->setSessionCrypto(m_sessionCrypto.get());
+            qCInfo(lcConnectionManager) << "ConnectionManager: ECDH 会话密钥派生成功，AES-256-GCM 已激活";
+        } else {
+            qCWarning(lcConnectionManager) << "ConnectionManager: ECDH 会话密钥派生失败，将以明文继续";
+        }
+    } else {
+        qCWarning(lcConnectionManager) <<"ConnectionManager: 服务端未提供有效 ECDH 公钥，跳过加密";
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    // 发送认证请求（此后消息已加密）
+    sendAuthenticationRequest(m_username.isEmpty() ? "guest" : m_username,
+                              m_password.isEmpty() ? "" : m_password);
 }
 
 void ConnectionManager::handleAuthenticationResponse(const QByteArray& data) {
     AuthenticationResponse response;
     if ( response.decode(data) ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient)
-            << MessageConstants::Network::AUTH_RESPONSE_RECEIVED;
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient)
-            << "Auth result:" << static_cast<int>(response.result);
+        qCInfo(lcConnectionManager) <<MessageConstants::Network::AUTH_RESPONSE_RECEIVED;
+        qCDebug(lcConnectionManager) <<"Auth result:" << static_cast<int>(response.result);
 
         if ( response.result == AuthResult::SUCCESS ) {
-            QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient)
-                << MessageConstants::Network::AUTH_SUCCESSFUL.arg(QString::fromUtf8(response.sessionId));
+            qCInfo(lcConnectionManager) << MessageConstants::Network::AUTH_SUCCESSFUL.arg(QString::fromUtf8(response.sessionId));
 
             stopAutoReconnect();
             m_currentReconnectAttempts = 0;
@@ -340,8 +365,7 @@ void ConnectionManager::handleAuthenticationResponse(const QByteArray& data) {
             setConnectionState(Error);
         }
     } else {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient)
-            << "Failed to parse authentication response";
+        qCWarning(lcConnectionManager) <<"Failed to parse authentication response";
     }
 }
 
@@ -379,13 +403,27 @@ void ConnectionManager::sendHandshakeRequest() {
     request.screenWidth = 1920;
     request.screenHeight = 1080;
     request.colorDepth = 32;
-    strcpy(request.clientName, "QtRemoteDesktop Client");
-    strcpy(request.clientOS, getClientOS().toUtf8().constData());
+    strncpy_s(request.clientName, sizeof(request.clientName), "QtRemoteDesktop Client", _TRUNCATE);
+    strncpy_s(request.clientOS, sizeof(request.clientOS), getClientOS().toUtf8().constData(), _TRUNCATE);
 
+    // 嵌入 ECDH 公钥和客户端 nonce（用于会话密钥派生）
+    QByteArray pubKey = m_sessionCrypto->publicKey();
+    if (pubKey.size() == 65) {
+        memcpy(request.ecdhPublicKey, pubKey.constData(), 65);
+    } else {
+        qCWarning(lcConnectionManager) <<"ConnectionManager: ECDH 公钥长度异常:" << pubKey.size();
+        memset(request.ecdhPublicKey, 0, 65);
+    }
+    if (m_clientNonce.size() == 16) {
+        memcpy(request.clientNonce, m_clientNonce.constData(), 16);
+    } else {
+        memset(request.clientNonce, 0, 16);
+    }
+
+    // 握手消息不加密（null crypto），明文发送 ECDH 公钥是安全的
     m_tcpClient->sendMessage(MessageType::HANDSHAKE_REQUEST, request);
 
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient)
-        << MessageConstants::Network::HANDSHAKE_REQUEST_SENT;
+    qCInfo(lcConnectionManager) << MessageConstants::Network::HANDSHAKE_REQUEST_SENT;
 }
 
 void ConnectionManager::sendAuthenticationRequest(const QString& username, const QString& password) {
@@ -401,8 +439,7 @@ void ConnectionManager::sendAuthenticationRequest(const QString& username, const
 
     m_tcpClient->sendMessage(MessageType::AUTHENTICATION_REQUEST, ar);
 
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient)
-        << MessageConstants::Network::AUTH_REQUEST_SENT.arg(username);
+    qCInfo(lcConnectionManager) << MessageConstants::Network::AUTH_REQUEST_SENT.arg(username);
 }
 
 QString ConnectionManager::getClientOS() {

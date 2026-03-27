@@ -6,6 +6,7 @@
 #include "../simulator/InputSimulator.h"
 #include "../dataflow/QueueManager.h"
 #include "../dataflow/DataFlowStructures.h"
+#include "../../common/core/crypto/SessionCrypto.h"
 
 // 取消Windows SDK定义的事件宏,避免与MessageType冲突
 #ifdef MOUSE_EVENT
@@ -28,7 +29,6 @@
 #include <QtCore/QDataStream>
 #include <QtCore/QBuffer>
 #include <QtCore/QCryptographicHash>
-#include <QtCore/QMessageLogger>
 #include <QtCore/QMutex>
 #include <QtCore/QMutexLocker>
 #include <QtCore/QRandomGenerator>
@@ -130,6 +130,13 @@ bool ClientHandlerWorker::initialize() {
         qCWarning(clientHandlerWorker, "无法获取队列管理器实例");
     }
 
+    // 初始化 ECDH：生成服务端密钥对和 nonce
+    m_sessionCrypto = std::make_unique<SessionCrypto>();
+    if (!m_sessionCrypto->generateKeyPair()) {
+        qCWarning(clientHandlerWorker, "ECDH 密钥对生成失败");
+    }
+    m_serverNonce = SessionCrypto::generateNonce(16);
+
     // 启动心跳检查定时器
     m_heartbeatCheckTimer->start();
 
@@ -217,8 +224,9 @@ void ClientHandlerWorker::sendScreenDataFromQueue() {
     screenData.height = processedData.imageSize.height();
     screenData.dataSize = processedData.compressedData.size();
 
-    // 预先编码消息,然后发送
-    QByteArray messageData = Protocol::createMessage(MessageType::SCREEN_DATA, screenData);
+    // 使用会话加密编码消息
+    SessionCrypto* crypto = (m_sessionCrypto && m_sessionCrypto->isReady()) ? m_sessionCrypto.get() : nullptr;
+    QByteArray messageData = Protocol::createMessage(MessageType::SCREEN_DATA, screenData, crypto);
 
     if ( messageData.isEmpty() ) {
         qCWarning(clientHandlerWorker) << "消息编码失败，messageData为空";
@@ -249,8 +257,8 @@ void ClientHandlerWorker::sendCursorType() {
     // 创建光标类型消息（仅包含类型）
     CursorMessage message(static_cast<Qt::CursorShape>(cursorType));
 
-    // 发送光标类型消息
-    QByteArray messageData = Protocol::createMessage(MessageType::CURSOR_POSITION, message);
+    SessionCrypto* crypto = (m_sessionCrypto && m_sessionCrypto->isReady()) ? m_sessionCrypto.get() : nullptr;
+    QByteArray messageData = Protocol::createMessage(MessageType::CURSOR_POSITION, message, crypto);
     if ( !messageData.isEmpty() ) {
         sendEncodedMessage(messageData);
     }
@@ -306,8 +314,12 @@ void ClientHandlerWorker::setPbkdf2Params(quint32 iterations, quint32 keyLength)
 
 void ClientHandlerWorker::sendMessage(MessageType type, const IMessageCodec& message) {
     try {
-        // 使用Protocol::createMessage来创建加密的消息
-        QByteArray messageData = Protocol::createMessage(type, message);
+        // 握手消息（HANDSHAKE_RESPONSE）明文发送；其余消息使用会话加密
+        SessionCrypto* crypto = nullptr;
+        if (type != MessageType::HANDSHAKE_RESPONSE && m_sessionCrypto && m_sessionCrypto->isReady()) {
+            crypto = m_sessionCrypto.get();
+        }
+        QByteArray messageData = Protocol::createMessage(type, message, crypto);
 
         if ( messageData.isEmpty() ) {
             qCWarning(clientHandlerWorker, "消息数据为空，跳过发送");
@@ -424,17 +436,16 @@ void ClientHandlerWorker::onReadyRead() {
         return;
     }
 
-    // 检查缓冲区大小，防止无限增长
-    if ( m_receiveBuffer.size() + newData.size() > NetworkConstants::MAX_PACKET_SIZE ) {
-        qCCritical(clientHandlerWorker) << "接收缓冲区超过最大限制:" << NetworkConstants::MAX_PACKET_SIZE
+    // 检查缓冲区大小，防止恶意数据导致内存耗尽
+    // 服务端仅接收控制/输入消息，上限远小于客户端
+    if ( m_receiveBuffer.size() + newData.size() > NetworkConstants::SERVER_RECV_BUFFER_LIMIT ) {
+        qCCritical(clientHandlerWorker) << "接收缓冲区超过服务端上限:" << NetworkConstants::SERVER_RECV_BUFFER_LIMIT
             << "当前大小:" << m_receiveBuffer.size()
             << "新增数据:" << newData.size();
         forceDisconnect();
         return;
     }
 
-    // 预留空间以减少内存分配次数
-    m_receiveBuffer.reserve(m_receiveBuffer.size() + newData.size());
     m_receiveBuffer.append(newData);
 
     // 更新心跳时间
@@ -450,10 +461,10 @@ void ClientHandlerWorker::onReadyRead() {
         // 步骤1：先验证数据完整性，同时获取MessageHeader
         MessageHeader header;
         QByteArray payload;
-        qsizetype result = Protocol::parseMessage(m_receiveBuffer, header, payload);
+        qsizetype result = Protocol::parseMessage(m_receiveBuffer, header, payload, m_sessionCrypto.get());
         if ( result > 0 ) {
-            // 步骤3：移除已处理的数据
-            m_receiveBuffer.remove(0, result);
+            // mid() 返回新 QByteArray，释放已消费部分的内存；避免 remove(0,n) 只移位不释放的问题
+            m_receiveBuffer = m_receiveBuffer.mid(result);
 
             // 步骤4：异步处理消息，使用 QMetaObject::invokeMethod 调度到主线程
             // 这样可以避免跨线程访问 QTcpSocket 的问题
@@ -598,8 +609,18 @@ void ClientHandlerWorker::processMessage(const MessageHeader& header, const QByt
 }
 
 void ClientHandlerWorker::handleHandshakeRequest(const QByteArray& data) {
-    Q_UNUSED(data)
-        qCDebug(clientHandlerWorker) << "处理握手请求";
+    qCDebug(clientHandlerWorker) << "处理握手请求";
+
+    // 解析客户端 ECDH 公钥和握手 nonce
+    HandshakeRequest request;
+    if (request.decode(data)) {
+        m_clientEcdhPubKey = QByteArray(reinterpret_cast<const char*>(request.ecdhPublicKey), 65);
+        m_clientHandshakeNonce = QByteArray(reinterpret_cast<const char*>(request.clientNonce), 16);
+        qCDebug(clientHandlerWorker) << "解析到客户端 ECDH 公钥 (65字节) 和 nonce (16字节)";
+    } else {
+        qCWarning(clientHandlerWorker) << "握手请求解析失败，将在无加密的情况下继续";
+    }
+
     sendHandshakeResponse();
 }
 
@@ -847,18 +868,36 @@ void ClientHandlerWorker::sendHandshakeResponse() {
     response.screenHeight = 1080; // 默认屏幕高度
     response.colorDepth = 32; // 32位色深
     response.supportedFeatures = 0; // 可以根据需要设置服务器特性
-    strcpy(response.serverName, "QtRemoteDesktop Server");
-    strcpy(response.serverOS, "macOS");
+    strncpy_s(response.serverName, sizeof(response.serverName), "QtRemoteDesktop Server", _TRUNCATE);
+    strncpy_s(response.serverOS, sizeof(response.serverOS), "macOS", _TRUNCATE);
 
+    // 嵌入服务端 ECDH 公钥和握手 nonce
+    QByteArray pubKey = m_sessionCrypto ? m_sessionCrypto->publicKey() : QByteArray();
+    if (pubKey.size() == 65) {
+        memcpy(response.ecdhPublicKey, pubKey.constData(), 65);
+    }
+    if (m_serverNonce.size() == 16) {
+        memcpy(response.serverNonce, m_serverNonce.constData(), 16);
+    }
+
+    // 握手响应明文发送（sendMessage 会因 isReady()==false 自动跳过加密）
     sendMessage(MessageType::HANDSHAKE_RESPONSE, response);
-    qCDebug(clientHandlerWorker) << "发送握手响应";
+    qCDebug(clientHandlerWorker) << "发送握手响应（含 ECDH 公钥和 nonce）";
+
+    // 握手响应发送后立即派生会话密钥，后续消息均加密
+    if (m_sessionCrypto && !m_clientEcdhPubKey.isEmpty() && !m_clientHandshakeNonce.isEmpty()) {
+        if (m_sessionCrypto->deriveSessionKey(m_clientEcdhPubKey, m_clientHandshakeNonce, m_serverNonce)) {
+            qCInfo(clientHandlerWorker, "会话密钥派生成功，后续通信将使用 AES-256-GCM 加密");
+        } else {
+            qCWarning(clientHandlerWorker, "会话密钥派生失败，后续通信将不加密");
+        }
+    }
 }
 
 void ClientHandlerWorker::sendAuthenticationResponse(AuthResult result, const QString& sessionId) {
     AuthenticationResponse response;
     response.result = result;
-    strncpy(response.sessionId, sessionId.toUtf8().constData(), sizeof(response.sessionId) - 1);
-    response.sessionId[sizeof(response.sessionId) - 1] = '\0'; // 确保字符串结束
+    strncpy_s(response.sessionId, sizeof(response.sessionId), sessionId.toUtf8().constData(), _TRUNCATE);
     response.permissions = 0; // 默认权限
 
     sendMessage(MessageType::AUTHENTICATION_RESPONSE, response);
@@ -868,7 +907,7 @@ void ClientHandlerWorker::sendAuthenticationResponse(AuthResult result, const QS
 void ClientHandlerWorker::sendAuthChallenge() {
     AuthChallenge challenge;
     challenge.method = 1; // PBKDF2_SHA256
-    challenge.iterations = 10000; // 与ServerWorker中的迭代次数保持一致
+    challenge.iterations = 600000; // 符合 NIST 2026 推荐的 PBKDF2-SHA256 迭代次数
     challenge.keyLength = 32; // 与ServerWorker中的密钥长度保持一致
 
     // 使用服务器预设的盐值，如果没有则生成新的
@@ -883,8 +922,7 @@ void ClientHandlerWorker::sendAuthChallenge() {
 
     // 将盐值转换为十六进制字符串
     QString saltHex = salt.toHex();
-    strncpy(challenge.saltHex, saltHex.toUtf8().constData(), sizeof(challenge.saltHex) - 1);
-    challenge.saltHex[sizeof(challenge.saltHex) - 1] = '\0';
+    strncpy_s(challenge.saltHex, sizeof(challenge.saltHex), saltHex.toUtf8().constData(), _TRUNCATE);
 
     sendMessage(MessageType::AUTH_CHALLENGE, challenge);
     qCDebug(clientHandlerWorker, "发送认证挑战，方法: %u, 迭代次数: %u, 密钥长度: %u, 盐值: %s",

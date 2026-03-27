@@ -7,6 +7,8 @@
 #include <QtCore/qglobal.h>
 #include <QtCore/Qt>
 
+class SessionCrypto;
+
 // 取消Windows SDK中的宏定义,避免命名冲突
 #ifdef _WIN32
 #ifdef MOUSE_EVENT
@@ -144,6 +146,8 @@ struct HandshakeRequest : public IMessageCodec {
     quint8 colorDepth;
     char clientName[64];
     char clientOS[32];
+    quint8 ecdhPublicKey[65];  // 未压缩 P-256 公钥（04 || x || y）
+    quint8 clientNonce[16];    // 随机 nonce，用于会话密钥派生
 
     // 将当前结构体序列化为QByteArray（小端）
     QByteArray encode() const;
@@ -160,6 +164,8 @@ struct HandshakeResponse : public IMessageCodec {
     quint8 supportedFeatures;
     char serverName[64];
     char serverOS[32];
+    quint8 ecdhPublicKey[65];  // 未压缩 P-256 公钥
+    quint8 serverNonce[16];    // 随机 nonce，用于会话密钥派生
 
     QByteArray encode() const;
     bool decode(const QByteArray& dataBuffer);
@@ -315,30 +321,28 @@ struct ClipboardMessage : public IMessageCodec {
 // 协议工具类
 class Protocol {
 public:
-    // 创建消息
-    static QByteArray createMessage(MessageType type, const IMessageCodec& message);
+    /**
+     * @brief 创建消息帧
+     * @param crypto  会话加密上下文（nullptr = 明文，用于握手阶段）
+     *                握手后所有消息必须传入有效的 SessionCrypto*
+     */
+    static QByteArray createMessage(MessageType type, const IMessageCodec& message,
+                                    SessionCrypto* crypto = nullptr);
 
-    // 解析消息
-    static qsizetype parseMessage(const QByteArray& data, MessageHeader& header, QByteArray& payload);
-
-    // 加密数据
-    static QByteArray encryptData(const QByteArray& data, const QByteArray& key);
-
-    // 解密数据
-    static QByteArray decryptData(const QByteArray& data, const QByteArray& key);
-
+    /**
+     * @brief 从接收缓冲区解析一条消息
+     * @param crypto  会话加密上下文（nullptr = 明文）
+     * @return -1 数据不完整，0 无效消息，>0 已消费字节数
+     */
+    static qsizetype parseMessage(const QByteArray& data, MessageHeader& header,
+                                  QByteArray& payload, SessionCrypto* crypto = nullptr);
 
 private:
-    // 验证接收数据的完整性（检查数据长度是否完整）
-    // 参数：data - 接收缓冲区数据，header - 输出参数，数据完整时填充消息头信息
-    // 返回值：-1 表示数据不完整需要等待更多数据，0 表示数据无效，>0 表示完整消息的总长度
+    // 验证接收数据完整性（仅检查长度与校验和，不解密）
     static qsizetype validateReceivedDataIntegrity(const QByteArray& data, MessageHeader& header);
 
-    // 计算校验和
+    // 计算校验和（CRC-like，基于 MD5 前4字节）
     static quint32 calculateChecksum(const QByteArray& data);
-
-private:
-    static const QByteArray XORkey;
 };
 
 #endif // PROTOCOL_H

@@ -9,10 +9,12 @@
 #include <QtCore/QTimer>
 #include <QtNetwork/QAbstractSocket>
 #include <QtNetwork/QTcpSocket>
+#include <memory>
 
 class InputSimulator;
 class IMessageCodec;
 class QueueManager;
+class SessionCrypto;
 
 /**
  * @brief 客户端处理工作线程类
@@ -306,6 +308,12 @@ private:
 
     // 屏幕数据发送相关
     QueueManager* m_queueManager;         ///< 队列管理器
+
+    // ECDH 会话加密
+    std::unique_ptr<SessionCrypto> m_sessionCrypto;  ///< 会话加密上下文（握手完成后就绪）
+    QByteArray m_serverNonce;             ///< 服务端握手 nonce
+    QByteArray m_clientEcdhPubKey;        ///< 客户端 ECDH 公钥（从握手请求中解析）
+    QByteArray m_clientHandshakeNonce;    ///< 客户端握手 nonce
 };
 
 #endif // CLIENTHANDLERWORKER_H

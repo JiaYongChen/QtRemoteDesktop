@@ -87,7 +87,7 @@ public:
         static constexpr int AES_KEY_SIZE = 256;                        ///< AES密钥大小 256位
         static constexpr int RSA_KEY_SIZE = 2048;                       ///< RSA密钥大小 2048位
         static constexpr int SALT_SIZE = 16;                            ///< 盐值大小 16字节
-        static constexpr int HASH_ITERATIONS = 10000;                   ///< 哈希迭代次数
+        static constexpr int HASH_ITERATIONS = 600000;                  ///< 哈希迭代次数（符合 NIST 2026 推荐）
         static constexpr int SESSION_TIMEOUT_MS = 3600000;              ///< 会话超时时间 1小时
         static const QString DEFAULT_CIPHER_SUITE;                      ///< 默认加密套件
     };

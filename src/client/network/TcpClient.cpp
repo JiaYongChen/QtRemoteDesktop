@@ -1,4 +1,5 @@
 #include "TcpClient.h"
+#include "../common/core/crypto/SessionCrypto.h"
 #include <QtNetwork/QTcpSocket>
 #include <QtCore/QTimer>
 #include "../common/core/config/MessageConstants.h"
@@ -6,7 +7,6 @@
 #include <QtCore/QDebug>
 #include "../common/core/logging/LoggingCategories.h"
 #include <QtCore/QDataStream>
-#include <QtCore/QMessageLogger>
 #include <QtNetwork/QNetworkProxy>
 
 TcpClient::TcpClient(QObject* parent)
@@ -34,7 +34,7 @@ TcpClient::~TcpClient() {
 
 void TcpClient::connectToHost(const QString& hostName, quint16 port) {
     if ( m_socket->state() != QAbstractSocket::UnconnectedState ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient) << MessageConstants::Network::ALREADY_CONNECTED;
+        qCDebug(lcClient) <<MessageConstants::Network::ALREADY_CONNECTED;
         return;
     }
 
@@ -94,18 +94,25 @@ quint16 TcpClient::serverPort() const {
 
 void TcpClient::sendMessage(MessageType type, const IMessageCodec& message) {
     if ( !isConnected() ) {
-        QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient) << MessageConstants::Network::NOT_CONNECTED;
+        qCWarning(lcClient) <<MessageConstants::Network::NOT_CONNECTED;
         return;
     }
 
-    // 使用编解码器创建帧
-    QByteArray messageData = Protocol::createMessage(type, message);
-
+    QByteArray messageData = Protocol::createMessage(type, message, m_sessionCrypto);
+    if (messageData.isEmpty()) {
+        qCWarning(lcClient) <<"TcpClient: 消息编码/加密失败，跳过发送";
+        return;
+    }
     m_socket->write(messageData);
 }
 
+void TcpClient::setSessionCrypto(SessionCrypto* crypto) {
+    m_sessionCrypto = crypto;
+    qCInfo(lcClient) <<"TcpClient: 会话加密已" << (crypto ? "启用 (AES-256-GCM)" : "禁用");
+}
+
 void TcpClient::onConnected() {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient) << "TcpClient::onConnected - TCP connection established";
+    qCInfo(lcClient) << "TcpClient::onConnected - TCP connection established";
 
     // 设置TCP优化选项
     m_socket->setSocketOption(QAbstractSocket::KeepAliveOption, NetworkConstants::KEEP_ALIVE_ENABLED);
@@ -117,12 +124,12 @@ void TcpClient::onConnected() {
     m_lastHeartbeat = QDateTime::currentDateTime();
     m_heartbeatCheckTimer->start();
 
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient) << "TcpClient::onConnected - Emitting connected signal";
+    qCDebug(lcClient) <<"TcpClient::onConnected - Emitting connected signal";
     emit connected();
 }
 
 void TcpClient::onDisconnected() {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcClient) << "TcpClient::onDisconnected - TCP connection closed";
+    qCInfo(lcClient) << "TcpClient::onDisconnected - TCP connection closed";
 
     // 停止心跳检查定时器
     m_heartbeatCheckTimer->stop();
@@ -131,7 +138,7 @@ void TcpClient::onDisconnected() {
     m_receiveBuffer.clear();
 
     // 发出断开连接信号，通知上层应用
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcClient) << "TcpClient::onDisconnected - Emitting disconnected signal";
+    qCDebug(lcClient) <<"TcpClient::onDisconnected - Emitting disconnected signal";
     emit disconnected();
 }
 
@@ -162,8 +169,7 @@ void TcpClient::onError(QAbstractSocket::SocketError error) {
     }
 
     // 详细的错误日志记录
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcClient)
-        << "TcpClient::onError - Socket error occurred:"
+    qCWarning(lcClient) <<"TcpClient::onError - Socket error occurred:"
         << "Error code:" << static_cast<int>(error)
         << "Original message:" << originalError
         << "Translated message:" << errorMsg;
@@ -182,17 +188,15 @@ void TcpClient::onReadyRead() {
         return;
     }
 
-    // 检查缓冲区大小，防止无限增长
-    if ( m_receiveBuffer.size() + newData.size() > NetworkConstants::MAX_PACKET_SIZE ) {
-        qCCritical(lcClient) << "接收缓冲区超过最大限制:" << NetworkConstants::MAX_PACKET_SIZE
+    // 检查缓冲区大小，防止恶意数据导致内存耗尽
+    if ( m_receiveBuffer.size() + newData.size() > NetworkConstants::CLIENT_RECV_BUFFER_LIMIT ) {
+        qCCritical(lcClient) << "接收缓冲区超过客户端上限:" << NetworkConstants::CLIENT_RECV_BUFFER_LIMIT
             << "当前大小:" << m_receiveBuffer.size()
             << "新增数据:" << newData.size();
         abort();
         return;
     }
 
-    // 预留空间以减少内存分配次数
-    m_receiveBuffer.reserve(m_receiveBuffer.size() + newData.size());
     m_receiveBuffer.append(newData);
 
     // 更新心跳时间
@@ -200,25 +204,26 @@ void TcpClient::onReadyRead() {
 
     // 处理缓冲区中的完整消息
     while ( !m_receiveBuffer.isEmpty() ) {
-        // 步骤1：先验证数据完整性，同时获取MessageHeader
         MessageHeader header;
         QByteArray payload;
-        qsizetype result = Protocol::parseMessage(m_receiveBuffer, header, payload);
+        qsizetype result = Protocol::parseMessage(m_receiveBuffer, header, payload, m_sessionCrypto);
         if ( result > 0 ) {
-            // 步骤3：移除已处理的数据
-            m_receiveBuffer.remove(0, result);
+            // mid() 返回新 QByteArray，释放已消费部分的内存；避免 remove(0,n) 只移位不释放的问题
+            m_receiveBuffer = m_receiveBuffer.mid(result);
 
-            // 步骤4：异步处理消息，使用 QMetaObject::invokeMethod 调度到主线程
-            // 这样可以避免跨线程访问 QTcpSocket 的问题
-            QMetaObject::invokeMethod(this, [this, header, payload]() {
+            // HandshakeResponse 必须同步处理：ConnectionManager 需要在此回调中
+            // 派生会话密钥并调用 setSessionCrypto()，使后续消息能正确解密
+            if (header.type == MessageType::HANDSHAKE_RESPONSE) {
                 processMessage(header, payload);
-            }, Qt::QueuedConnection);
+            } else {
+                QMetaObject::invokeMethod(this, [this, header, payload]() {
+                    processMessage(header, payload);
+                }, Qt::QueuedConnection);
+            }
         } else if ( result == 0 ) {
-            // 消息无效，清空缓冲区
             qCCritical(lcClient) << "接收到无效消息，清空缓冲区";
             m_receiveBuffer.clear();
         } else {
-            // 数据不完整，等待更多数据
             break;
         }
     }

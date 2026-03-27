@@ -28,6 +28,18 @@ namespace NetworkConstants {
     // ==================== 数据包大小限制 ====================
     const int MAX_PACKET_SIZE = 50 * 1024 * 1024;  // 50MB - 与屏幕数据上限保持一致，支持大分辨率传输
 
+    // ==================== 接收缓冲区上限（分角色） ====================
+    // 客户端需接收大屏幕帧，服务端只接收控制/输入消息，两者上限不同
+    const int CLIENT_RECV_BUFFER_LIMIT = 50 * 1024 * 1024;  // 50MB - 客户端侧（接收屏幕数据）
+    const int SERVER_RECV_BUFFER_LIMIT =  4 * 1024 * 1024;  //  4MB - 服务端侧（仅接收控制/输入消息）
+
+    // ==================== 按消息类型的载荷上限（防止伪造超大包阻塞缓冲区） ====================
+    const int MAX_PAYLOAD_CONTROL   =  4 * 1024;            //  4KB - 握手/认证/心跳/光标等控制消息
+    const int MAX_PAYLOAD_INPUT     =  256;                  // 256B - 鼠标/键盘输入事件
+    const int MAX_PAYLOAD_SCREEN    = 50 * 1024 * 1024;     // 50MB - 屏幕帧（大分辨率压缩后）
+    const int MAX_PAYLOAD_CLIPBOARD =  8 * 1024 * 1024;     //  8MB - 剪贴板（支持大图片粘贴）
+    const int MAX_PAYLOAD_FILE      =  1 * 1024 * 1024;     //  1MB - 单次文件传输分块
+
     // ==================== 网络性能优化参数 ====================
     const int TCP_NODELAY_ENABLED = 1;             // 启用TCP_NODELAY减少延迟（禁用Nagle算法）
     const int KEEP_ALIVE_ENABLED = 1;              // 启用TCP Keep-Alive

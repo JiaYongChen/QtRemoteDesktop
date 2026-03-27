@@ -7,7 +7,6 @@
 #include <QtOpenGLWidgets/QOpenGLWidget>
 #endif
 #include <QtCore/QTimer>
-#include <QtCore/QDebug>
 #include <QtGui/QPainter>
 #include <QtGui/QScreen>
 #include <cmath>
@@ -45,7 +44,7 @@ RenderManager::~RenderManager() {
 
 void RenderManager::initializeScene() {
     if ( !m_graphicsView ) {
-        qWarning() << "RenderManager: Graphics view is null";
+        qCWarning(lcRenderManager) <<"RenderManager: Graphics view is null";
         return;
     }
 
@@ -64,7 +63,7 @@ void RenderManager::initializeScene() {
 
 void RenderManager::setupView() {
     if ( !m_graphicsView ) {
-        qWarning() << "RenderManager: Graphics view is null";
+        qCWarning(lcRenderManager) <<"RenderManager: Graphics view is null";
         return;
     }
 
@@ -87,7 +86,7 @@ void RenderManager::setupView() {
 
 void RenderManager::setRemoteScreen(const QImage& image) {
     if ( image.isNull() ) {
-        qWarning() << "RenderManager: Received null image";
+        qCWarning(lcRenderManager) <<"RenderManager: Received null image";
         return;
     }
 
@@ -129,12 +128,12 @@ void RenderManager::updateRemoteScreen(const QImage& screen) {
 
 void RenderManager::updateRemoteRegion(const QImage& region, const QRect& rect) {
     if ( region.isNull() || rect.isEmpty() ) {
-        qWarning() << "RenderManager: Invalid region update parameters";
+        qCWarning(lcRenderManager) <<"RenderManager: Invalid region update parameters";
         return;
     }
 
     if ( m_remoteScreen.isNull() ) {
-        qWarning() << "RenderManager: No remote screen to update";
+        qCWarning(lcRenderManager) <<"RenderManager: No remote screen to update";
         return;
     }
 
@@ -183,7 +182,7 @@ void RenderManager::updateRemoteRegion(const QImage& region, const QRect& rect) 
 
 void RenderManager::setScaleFactor(double factor) {
     if ( factor <= 0.0 ) {
-        qWarning() << "RenderManager: Invalid scale factor:" << factor;
+        qCWarning(lcRenderManager) <<"RenderManager: Invalid scale factor:" << factor;
         return;
     }
 
@@ -254,15 +253,15 @@ void RenderManager::enableOpenGL(bool enable) {
     if ( enable ) {
         QOpenGLWidget* openGLWidget = new QOpenGLWidget();
         m_graphicsView->setViewport(openGLWidget);
-        qDebug() << "RenderManager: OpenGL rendering enabled";
+        qCDebug(lcRenderManager) <<"RenderManager: OpenGL rendering enabled";
     } else {
         m_graphicsView->setViewport(new QWidget());
-        qDebug() << "RenderManager: OpenGL rendering disabled";
+        qCDebug(lcRenderManager) <<"RenderManager: OpenGL rendering disabled";
     }
 #else
     // OpenGL is disabled, always use software rendering
     m_graphicsView->setViewport(new QWidget());
-    qDebug() << "RenderManager: OpenGL disabled at compile time, using software rendering";
+    qCDebug(lcRenderManager) <<"RenderManager: OpenGL disabled at compile time, using software rendering";
     Q_UNUSED(enable)
     #endif
 }
@@ -329,7 +328,7 @@ void RenderManager::updateViewTransform() {
 
 void RenderManager::ensurePixmapItem() {
     if ( !m_scene ) {
-        qWarning() << "RenderManager: Scene is null, cannot create pixmap item";
+        qCWarning(lcRenderManager) <<"RenderManager: Scene is null, cannot create pixmap item";
         return;
     }
 
@@ -337,9 +336,9 @@ void RenderManager::ensurePixmapItem() {
         m_pixmapItem = m_scene->addPixmap(QPixmap());
         if ( m_pixmapItem ) {
             m_pixmapItem->setPos(0, 0);
-            qDebug() << "RenderManager: Pixmap item created";
+            qCDebug(lcRenderManager) <<"RenderManager: Pixmap item created";
         } else {
-            qWarning() << "RenderManager: Failed to create pixmap item";
+            qCWarning(lcRenderManager) <<"RenderManager: Failed to create pixmap item";
         }
     }
 }

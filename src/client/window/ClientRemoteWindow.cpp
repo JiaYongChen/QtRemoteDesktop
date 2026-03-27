@@ -65,7 +65,7 @@ ClientRemoteWindow::ClientRemoteWindow(SessionManager* sessionManager, QWidget* 
     // 确保窗口关闭时自动删除,避免无父对象窗口内存泄漏
     // 使用属性而非手动deleteLater,减少重复释放风险
     setAttribute(Qt::WA_DeleteOnClose, true);
-    qDebug() << "[ClientRemoteWindow] Constructor started for sessionManager:" << sessionManager;
+    qCDebug(lcClientRemoteWindow) << "[ClientRemoteWindow] Constructor started for sessionManager:" << sessionManager;
 
     // 注意:sessionManager 可能已经 moveToThread,所以要避免直接调用其方法
     // connectionId() 访问的是构造时设置的 m_connectionId，通常是安全的

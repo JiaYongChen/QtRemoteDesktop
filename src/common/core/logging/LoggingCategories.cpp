@@ -28,6 +28,9 @@ Q_LOGGING_CATEGORY(lcMemory, "core.memory", QtDebugMsg)
 /// 配置管理日志
 Q_LOGGING_CATEGORY(lcConfig, "core.config", QtDebugMsg)
 
+/// 剪贴板模块日志
+Q_LOGGING_CATEGORY(lcClipboard, "common.clipboard", QtDebugMsg)
+
 // ============================================================================
 // 服务端模块日志分类定义
 // ============================================================================
@@ -161,7 +164,7 @@ QStringList LoggingCategories::getAllCategoryNames() {
     static QStringList categories = {
         // 核心模块
         "app", "core.protocol", "core.encryption",
-        "performance", "core.memory", "core.config",
+        "performance", "core.memory", "core.config", "common.clipboard",
 
         // 服务端模块
         "server", "server.manager", "server.capture", "server.net",

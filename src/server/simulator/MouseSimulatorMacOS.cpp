@@ -24,7 +24,7 @@ bool MouseSimulatorMacOS::initialize() {
     // 检查辅助功能权限
     if (!checkAccessibilityPermission()) {
         setLastError("需要辅助功能权限才能模拟输入事件。请在系统偏好设置 > 安全性与隐私 > 隐私 > 辅助功能中授予权限。");
-        qWarning() << "MouseSimulatorMacOS: 缺少辅助功能权限";
+        qCWarning(lcMouseSimulatorMacOS) << "MouseSimulatorMacOS: 缺少辅助功能权限";
 
         // 尝试请求权限（会打开系统设置）
         requestAccessibilityPermission();
@@ -33,7 +33,7 @@ bool MouseSimulatorMacOS::initialize() {
 
     m_screenSize = getScreenSize();
     m_initialized = true;
-    qDebug() << "MouseSimulatorMacOS: macOS 辅助功能权限已授予";
+    qCInfo(lcMouseSimulatorMacOS) << "MouseSimulatorMacOS: macOS 辅助功能权限已授予";
     return true;
 }
 

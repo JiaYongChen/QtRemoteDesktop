@@ -5,7 +5,7 @@
 #include <QtCore/QMimeData>
 #include <QtCore/QUrl>
 #include <QtCore/QFileInfo>
-#include <QtCore/QDebug>
+#include "../../common/core/logging/LoggingCategories.h"
 
 FileTransferManager::FileTransferManager(QWidget *targetWidget, QObject *parent)
     : QObject(parent)
@@ -25,7 +25,7 @@ void FileTransferManager::setupTargetWidget()
     if (m_targetWidget) {
         // 启用拖拽接受
         m_targetWidget->setAcceptDrops(true);
-        qDebug() << "FileTransferManager: Target widget drag and drop enabled";
+        qCDebug(lcClientManager) <<"FileTransferManager: Target widget drag and drop enabled";
     }
 }
 
@@ -39,7 +39,7 @@ void FileTransferManager::setEnabled(bool enabled)
             m_targetWidget->setAcceptDrops(enabled);
         }
         
-        qDebug() << "FileTransferManager: Enabled set to" << enabled;
+        qCDebug(lcClientManager) <<"FileTransferManager: Enabled set to" << enabled;
         emit enabledChanged(enabled);
     }
 }
@@ -60,7 +60,7 @@ void FileTransferManager::setTargetWidget(QWidget *widget)
         m_targetWidget = widget;
         setupTargetWidget();
         
-        qDebug() << "FileTransferManager: Target widget changed";
+        qCDebug(lcClientManager) <<"FileTransferManager: Target widget changed";
     }
 }
 
@@ -82,7 +82,7 @@ bool FileTransferManager::handleDragEnterEvent(QDragEnterEvent *event)
         for (const QUrl &url : urls) {
             if (url.isLocalFile()) {
                 event->acceptProposedAction();
-                qDebug() << "FileTransferManager: Drag enter accepted";
+                qCDebug(lcClientManager) <<"FileTransferManager: Drag enter accepted";
                 return true;
             }
         }
@@ -106,7 +106,7 @@ bool FileTransferManager::handleDropEvent(QDropEvent *event)
             // 获取放置位置
             QPoint dropPosition = event->position().toPoint();
             
-            qDebug() << "FileTransferManager: Files dropped at" << dropPosition 
+            qCDebug(lcClientManager) <<"FileTransferManager: Files dropped at" << dropPosition 
                      << "Files:" << localFiles;
             
             emit filesDropped(localFiles, dropPosition.x(), dropPosition.y());
@@ -130,12 +130,12 @@ QStringList FileTransferManager::extractLocalFiles(const QList<QUrl> &urls) cons
             // 验证文件是否存在
             if (fileInfo.exists()) {
                 localFiles << filePath;
-                qDebug() << "FileTransferManager: Valid local file:" << filePath;
+                qCDebug(lcClientManager) <<"FileTransferManager: Valid local file:" << filePath;
             } else {
-                qWarning() << "FileTransferManager: File does not exist:" << filePath;
+                qCWarning(lcClientManager) <<"FileTransferManager: File does not exist:" << filePath;
             }
         } else {
-            qDebug() << "FileTransferManager: Non-local URL ignored:" << url.toString();
+            qCDebug(lcClientManager) <<"FileTransferManager: Non-local URL ignored:" << url.toString();
         }
     }
     

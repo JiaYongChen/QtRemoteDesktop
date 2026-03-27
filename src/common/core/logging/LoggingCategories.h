@@ -80,6 +80,9 @@ Q_DECLARE_LOGGING_CATEGORY(lcMemory)
 /// 配置管理日志
 Q_DECLARE_LOGGING_CATEGORY(lcConfig)
 
+/// 剪贴板模块日志
+Q_DECLARE_LOGGING_CATEGORY(lcClipboard)
+
 // ============================================================================
 // 服务端模块日志分类
 // ============================================================================

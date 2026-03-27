@@ -11,7 +11,6 @@
 #include <QtCore/QTimer>
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QCommandLineOption>
-#include <QtCore/QMessageLogger>
 #include <signal.h>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -354,10 +353,7 @@ int main(int argc, char* argv[]) {
         // 保存配置
         Config::instance()->save();
 
-        // 统一输出中文退出提示，便于测试用例匹配
-        qInfo().noquote() << "应用程序即将退出";
-
-        qCInfo(lcServer, "Application exiting with code: %d", result);
+        qCInfo(lcApp, "Application exiting with code: %d", result);
 
         return result;
 

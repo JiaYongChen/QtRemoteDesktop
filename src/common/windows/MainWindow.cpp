@@ -41,7 +41,6 @@
 #include <QtCore/QEvent>
 #include <QtGui/QContextMenuEvent>
 #include <QtWidgets/QListWidgetItem>
-#include <QtCore/QMessageLogger>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -476,10 +475,6 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     // 服务器模式下执行优雅停止序列
     gracefulShutdown();
 
-    // 统一输出最终态日志，确保测试能够稳定捕获到"服务器已停止"
-    // 注意：ServerManager::gracefulShutdown()内部已具备最终态日志输出；
-    // 这里在UI层再次输出同样的最终态，保证在某些日志过滤或异步退出情况下也不会丢失该关键日志。
-    qInfo().noquote() << "服务器已停止";
     qCInfo(lcUI) << "服务器已停止";
 
     // 接受关闭事件
@@ -643,11 +638,6 @@ void MainWindow::gracefulShutdown() {
         m_serverManager->gracefulShutdown();
 
         qCInfo(lcUI, "MainWindow::gracefulShutdown() - 服务器已正常停止");
-        // 统一输出最终态日志，确保测试能够稳定捕获到“服务器已停止”
-        // 使用非分类信息日志以避免分类过滤导致的遗漏
-        qInfo().noquote() << "服务器已停止";
-        // 同时输出分类信息日志，便于按模块检索
-        qCInfo(lcUI) << "服务器已停止";
     }
 
     // 断开所有信号连接，防止在退出过程中触发回调
@@ -699,7 +689,7 @@ void MainWindow::connectToHostDirectly(const QString& host, int port) {
 }
 
 void MainWindow::onConnectionEstablished(const QString& connectionId) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onConnectionEstablished - Connection established for:" << connectionId;
+    qCInfo(lcApp) << "MainWindow::onConnectionEstablished - Connection established for:" << connectionId;
 
     // 获取连接信息并添加到历史
     if ( m_clientManager ) {
@@ -712,7 +702,7 @@ void MainWindow::onConnectionEstablished(const QString& connectionId) {
 }
 
 void MainWindow::onServerStarted(quint16 port) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onServerStarted() called with port:" << port;
+    qCInfo(lcApp) << "MainWindow::onServerStarted() called with port:" << port;
     updateServerStatus(tr("服务器启动成功，端口: %1").arg(port));
 
     // 更新服务器按钮状态
@@ -734,7 +724,7 @@ void MainWindow::onServerStarted(quint16 port) {
 }
 
 void MainWindow::onServerStopped() {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onServerStopped() called";
+    qCInfo(lcApp) << "MainWindow::onServerStopped() called";
     updateServerStatus(tr("服务器已停止"));
 
     // 更新服务器按钮状态
@@ -749,7 +739,7 @@ void MainWindow::onServerStopped() {
 }
 
 void MainWindow::onServerError(const QString& error) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).warning(lcApp) << "MainWindow::onServerError() called with error:" << error;
+    qCWarning(lcApp) << "MainWindow::onServerError() called with error:" << error;
     // QMessageBox msgBox(this);
     // msgBox.setIcon(QMessageBox::Warning);
     // msgBox.setWindowTitle(tr("服务器错误"));
@@ -759,17 +749,17 @@ void MainWindow::onServerError(const QString& error) {
 }
 
 void MainWindow::onClientConnected(const QString& clientId) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onClientConnected() called with clientId:" << clientId;
+    qCInfo(lcApp) << "MainWindow::onClientConnected() called with clientId:" << clientId;
     updateConnectionStatus(tr("客户端已连接: %1").arg(clientId));
 }
 
 void MainWindow::onClientDisconnected(const QString& clientId) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onClientDisconnected() called with clientId:" << clientId;
+    qCInfo(lcApp) << "MainWindow::onClientDisconnected() called with clientId:" << clientId;
     updateConnectionStatus(tr("客户端已断开: %1").arg(clientId));
 }
 
 void MainWindow::onClientAuthenticated(const QString& clientId) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).info(lcApp) << "MainWindow::onClientAuthenticated() called with clientId:" << clientId;
+    qCInfo(lcApp) << "MainWindow::onClientAuthenticated() called with clientId:" << clientId;
     updateConnectionStatus(tr("客户端已认证: %1").arg(clientId));
 }
 
@@ -791,7 +781,7 @@ void MainWindow::iconActivated(QSystemTrayIcon::ActivationReason reason) {
 }
 
 void MainWindow::cleanupConnection(const QString& connectionId) {
-    QMessageLogger(__FILE__, __LINE__, Q_FUNC_INFO).debug(lcApp) << "MainWindow::cleanupConnection for:" << connectionId;
+    qCDebug(lcApp) << "MainWindow::cleanupConnection for:" << connectionId;
 }
 
 void MainWindow::onConnectionItemDoubleClicked() {

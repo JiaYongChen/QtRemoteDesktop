@@ -22,7 +22,7 @@ bool MouseSimulatorWindows::initialize() {
     // Windows API 不需要特殊初始化
     m_screenSize = getScreenSize();
     m_initialized = true;
-    qDebug() << "MouseSimulatorWindows: Initialized successfully";
+    qCInfo(lcMouseSimulatorWindows) << "MouseSimulatorWindows: Initialized successfully";
     return true;
 }
 

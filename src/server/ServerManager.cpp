@@ -111,7 +111,7 @@ bool ServerManager::startServer(quint16 port, const QString& password) {
     // 3. 获取worker并启动服务器（不持有其他锁，避免死锁）
     ServerWorker* worker = getServerWorker();
     if ( !worker ) {
-        qWarning() << "Failed to get ServerWorker instance";
+        qCWarning(lcServerManager) << "Failed to get ServerWorker instance";
         // 清理线程
         {
             QMutexLocker workerLock(&m_workerMutex);
@@ -278,10 +278,6 @@ void ServerManager::onWorkerServerStopped() {
         m_captureStarted = false;
     }
     qCDebug(lcServerManager) << "onWorkerServerStopped(): server stopped";
-    // 同步输出一个非分类的信息日志，确保无论日志分类配置如何，最终态都能被捕获
-    qInfo().noquote() << "服务器已停止";
-    // 统一输出最终态日志，确保无论通过哪种关闭路径，都会有明确的“服务器已停止”信号
-    // 使用信息级别日志以提高在不同环境下的可见性
     qCInfo(lcServerManager) << "服务器已停止";
     emit serverStopped();
 }
@@ -455,10 +451,7 @@ void ServerManager::gracefulShutdown() {
         m_isServerRunning = false;
         m_currentPort = 0;
     }
-    // 统一输出最终态，供测试与运维脚本稳定识别（尽量提前打印，避免进程退出导致丢失）
-    // 同步输出一个非分类的信息日志，确保无论日志分类配置如何，最终态都能被捕获
-    qInfo().noquote() << "服务器已停止";
-    qCInfo(lcServerManager) << "服务器已停止";
+    qCInfo(lcServerManager) << "server stopped";
     // 同步输出debug级别日志，结合默认规则"*.debug=true"确保在所有配置下也能看到
     qCDebug(lcServerManager) << "服务器已停止";
     qCDebug(lcServerManager) << "ServerManager优雅关闭完成";
